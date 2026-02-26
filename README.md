@@ -6,7 +6,7 @@ A HACS-installable custom integration for **Kodak Smart Home cameras** after Kod
 
 ## Features
 
-- 📷 **Camera entity** — live snapshot view; RTSP stream for full video and HomeKit via Homebridge
+- 📷 **Camera entity** — live H264 video via built-in VLVL→RTSP bridge; JPEG snapshots via ffmpeg; full HomeKit support
 - 📊 **Sensors** — battery, WiFi signal, temperature, humidity, SD card usage, bitrate
 - 🔔 **Binary sensors** — charging status, camera active, motion recording
 - 🔀 **Switches** — motion detection, sound detection, blue LED, auto-remove old clips
@@ -81,56 +81,64 @@ The card shows:
 | Melodies | Play melody 1–5, stop button |
 | System | Restart camera button |
 
-> If the feed shows a placeholder, see [Configuring the stream URL](#configuring-the-stream-url) below.
+> If the feed shows a placeholder, ensure `ffmpeg` is installed on the HA host (see [Live View](#live-view) below).
 
 ---
 
-## Configuring the Stream URL
+## Live View
 
-The camera streams video locally over RTSP. To enable it:
+KodaxHA includes a built-in **VLVL → RTSP bridge** that enables live video directly from the camera with no cloud, no port forwarding, and no additional software required.
+
+### How it works
+
+Kodak cameras stream H264 video using a proprietary UDP P2P protocol called **VLVL**. The integration:
+
+1. Fetches the camera's MAC address automatically
+2. Starts a minimal RTSP server bound to `localhost` (chosen automatically, no config needed)
+3. On each request, opens a VLVL session to the camera and forwards H264 NALUs as RTP/H264
+4. HA's built-in stream component proxies the RTSP stream as HLS / WebRTC to the frontend
+
+The result: **the Live View card "just works"** after adding the integration, as long as HA and the camera are on the same network.
+
+### Snapshots (thumbnails)
+
+Thumbnails are captured by grabbing one H264 frame from the VLVL stream and decoding it to JPEG using **ffmpeg**. For this to work, `ffmpeg` must be installed on the system running Home Assistant:
+
+| HA install type | ffmpeg location |
+|-----------------|-----------------|
+| Home Assistant OS (HAOS) | ✅ Pre-installed |
+| Home Assistant Supervised | ✅ Typically included |
+| Home Assistant Core (venv) | Install with `apt install ffmpeg` or equivalent |
+| Docker | Add `ffmpeg` to your Docker image or use HAOS |
+
+If ffmpeg is unavailable, the stream still works but the thumbnail/snapshot will be blank. You can also set a custom **Snapshot URL** under *Settings → Integrations → KodaxHA → Configure* to use a static image URL as the thumbnail.
+
+### Manual override
+
+If you want to use an external RTSP URL (e.g. from another integration or proxy) instead of the built-in bridge:
 
 1. **Settings → Integrations → KodaxHA → Configure**
 2. Enter your **RTSP Stream URL** and/or **Snapshot URL**
-3. Save — no restart needed
+3. Save — the built-in RTSP server will be bypassed when a manual URL is set
 
-### Finding your RTSP URL
-
-Open **VLC → Media → Open Network Stream** and try these common paths for your camera IP:
-
-```
-rtsp://192.168.178.36/
-rtsp://192.168.178.36:554/
-rtsp://192.168.178.36/live
-rtsp://192.168.178.36:554/stream1
-```
-
-The first one that shows video is your URL. Once set, the `camera.kodak_camera_live_view` entity becomes a proper live stream that HA can proxy.
-
-### Snapshot URL
-
-For still images (faster refresh in some views):
-
-```
-http://192.168.178.36/snapshot.jpg
-```
 
 ---
 
 ## HomeKit via Homebridge
 
-Once the RTSP URL is configured, there are two paths to HomeKit:
+The built-in RTSP bridge exposes a standard RTSP stream, so HomeKit works with either of the two paths below.
 
 ### Option A — via Home Assistant (easiest)
 Install the **HomeKit Bridge** integration in HA (`Settings → Integrations → HomeKit Bridge`). The `camera.kodak_camera_live_view` entity is exposed to HomeKit automatically alongside all other KodaxHA entities.
 
 ### Option B — via homebridge-camera-ffmpeg (direct)
-In Homebridge, add a camera source pointed directly at the RTSP URL:
+In Homebridge, add a camera source pointed at the RTSP URL that HA logs on startup (check **Settings → System → Logs** for `KodaxHA (%s): RTSP server started at rtsp://127.0.0.1:…`):
 
 ```json
 {
   "name": "Kodak Camera",
   "videoConfig": {
-    "source": "-i rtsp://192.168.178.36/",
+    "source": "-i rtsp://127.0.0.1:PORT/",
     "maxFPS": 15,
     "maxBitrate": 600,
     "vcodec": "copy"
@@ -144,7 +152,7 @@ In Homebridge, add a camera source pointed directly at the RTSP URL:
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| `camera.kodak_camera_live_view` | Camera | Snapshot + RTSP stream |
+| `camera.kodak_camera_live_view` | Camera | Live H264 stream via VLVL→RTSP bridge + JPEG snapshots via ffmpeg |
 | `sensor.kodak_camera_battery_level` | Sensor | Battery % |
 | `sensor.kodak_camera_wifi_signal` | Sensor | WiFi signal % |
 | `sensor.kodak_camera_temperature` | Sensor | °C (if sensor present) |
@@ -194,8 +202,9 @@ lovelace:
 
 ## Credits
 
-- Camera API reverse-engineered from [kairoaraujo/kodak-smart-home](https://github.com/kairoaraujo/kodak-smart-home)
-- Built on top of the original Kodak Smart Home mobile app
+- Camera HTTP API reverse-engineered from [kairoaraujo/kodak-smart-home](https://github.com/kairoaraujo/kodak-smart-home) and community findings in [issue #16](https://github.com/kairoaraujo/kodak-smart-home/issues/16)
+- VLVL P2P protocol reverse-engineered by Elliott L-W through UDP packet analysis; SPS/PPS parameters verified with VLC (H264 baseline 1280×720)
+- Built on top of the original Kodak Smart Home mobile app architecture (PerimeterSafe SDK)
 
 ## Licence
 
