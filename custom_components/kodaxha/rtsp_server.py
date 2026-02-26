@@ -330,7 +330,7 @@ class KodaxRTSPServer:
     """Async RTSP server bound to loopback; bridges VLVL → RTSP for one camera.
 
     Lifecycle:
-        server = KodaxRTSPServer(camera_ip="10.0.6.98")
+        server = KodaxRTSPServer(camera_ip="192.168.1.100")
         await server.start(http_session)         # binds port, starts serving
         rtsp_url = server.rtsp_url               # e.g. "rtsp://127.0.0.1:PORT/"
         await server.stop()                      # shuts down cleanly

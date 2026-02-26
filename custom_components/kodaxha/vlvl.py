@@ -76,7 +76,7 @@ class VLVLFrameReceiver:
     Usage::
 
         async with aiohttp.ClientSession() as http:
-            rx = VLVLFrameReceiver("10.0.6.98", "10.0.5.113", "E048AF02D690")
+            rx = VLVLFrameReceiver("192.168.1.100", "192.168.1.10", "AABBCCDDEEFF")
             if await rx.open(http):
                 frame = await rx.receive_one_frame()  # Annex B bytes w/ SPS+PPS
                 rx.close()
@@ -266,14 +266,14 @@ async def get_camera_mac(
     camera_ip: str,
     http_session: aiohttp.ClientSession,
 ) -> str | None:
-    """Return the camera's MAC address (e.g. 'E048AF02D690')."""
+    """Return the camera's MAC address (e.g. 'AABBCCDDEEFF')."""
     url = f"http://{camera_ip}/?req=get_mac_address"
     try:
         async with http_session.get(
             url, timeout=aiohttp.ClientTimeout(total=5)
         ) as resp:
             text = (await resp.text()).strip()
-            # Response: "get_mac_address: E048AF02D690"
+            # Response: "get_mac_address: AABBCCDDEEFF"
             if ": " in text:
                 mac = text.split(": ", 1)[1].strip()
             else:

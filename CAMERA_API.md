@@ -1,6 +1,6 @@
 # Kodak Smart Home Camera — Reverse-Engineered API Reference
 
-Documented against firmware `03.03.92` on a **Kodak W101 / W121** at local IP `10.0.6.98`.
+Documented against firmware `03.03.92` on a **Kodak W101 / W121**.
 All API calls are plain HTTP GET to `http://<camera_ip>/`.
 
 ---
@@ -79,7 +79,7 @@ Returns the camera's hardware MAC address. Used to construct the VLVL stream nam
 GET http://<ip>/?req=get_mac_address
 ```
 
-**Response**: `get_mac_address: E048AF02D690`  
+**Response**: `get_mac_address: AABBCCDDEEFF`  
 (12 hex chars, no separators)
 
 ---
