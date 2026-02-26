@@ -109,6 +109,7 @@ class VLVLFrameReceiver:
             f"&ip={self._local_ip}"
             f"&streamname={self._mac}{_STREAM_SUFFIX}"
         )
+        _LOGGER.debug("VLVL session request: %s", url)
         try:
             async with http_session.get(
                 url, timeout=aiohttp.ClientTimeout(total=6)
@@ -120,6 +121,7 @@ class VLVLFrameReceiver:
             self._sock = None
             return False
 
+        _LOGGER.debug("VLVL session response: %s", text.strip())
         if "error=200" not in text:
             _LOGGER.warning("Camera rejected VLVL session: %s", text)
             sock.close()

@@ -10,6 +10,7 @@ CONF_SCAN_INTERVAL = "scan_interval"
 # post-install without re-adding the integration
 CONF_STREAM_URL = "stream_url"
 CONF_SNAPSHOT_URL = "snapshot_url"
+CONF_LOCAL_IP = "local_ip"  # optional override for auto-detected outbound IP
 
 # Defaults
 DEFAULT_NAME = "Kodak Camera"

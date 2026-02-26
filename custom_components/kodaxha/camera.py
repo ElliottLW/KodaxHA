@@ -30,7 +30,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_CAMERA_IP, CONF_SNAPSHOT_URL, CONF_STREAM_URL, DOMAIN
+from .const import CONF_CAMERA_IP, CONF_LOCAL_IP, CONF_SNAPSHOT_URL, CONF_STREAM_URL, DOMAIN
 from .coordinator import KodaxHACoordinator
 from .rtsp_server import KodaxRTSPServer
 from .sensor import _device_info
@@ -54,9 +54,14 @@ async def async_setup_entry(
     snapshot_url: str | None = (
         entry.options.get(CONF_SNAPSHOT_URL) or entry.data.get(CONF_SNAPSHOT_URL)
     ) or None
+    local_ip_override: str | None = (
+        entry.options.get(CONF_LOCAL_IP) or entry.data.get(CONF_LOCAL_IP)
+    ) or None
+    if local_ip_override:
+        local_ip_override = local_ip_override.strip() or None
 
     async_add_entities(
-        [KodaxHACamera(coordinator, camera_ip, stream_url, snapshot_url)]
+        [KodaxHACamera(coordinator, camera_ip, stream_url, snapshot_url, local_ip_override)]
     )
 
 
@@ -83,6 +88,7 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
         camera_ip: str,
         stream_url: str | None,
         snapshot_url: str | None,
+        local_ip_override: str | None = None,
     ) -> None:
         CoordinatorEntity.__init__(self, coordinator)
         Camera.__init__(self)
@@ -94,7 +100,15 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
 
         self._rtsp_server: KodaxRTSPServer | None = None
         self._mac: str | None = None
-        self._local_ip: str = get_local_ip_for(camera_ip)
+        auto_ip = get_local_ip_for(camera_ip)
+        self._local_ip: str = local_ip_override or auto_ip
+        if local_ip_override:
+            _LOGGER.info(
+                "KodaxHA (%s): using manual local IP %s (auto-detected: %s)",
+                camera_ip, local_ip_override, auto_ip,
+            )
+        else:
+            _LOGGER.debug("KodaxHA (%s): auto-detected local IP %s", camera_ip, auto_ip)
         self._server_started = False
 
     # ── HA entity lifecycle ─────────────────────────────────────────────────
