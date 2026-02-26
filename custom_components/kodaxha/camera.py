@@ -116,28 +116,32 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
     async def async_added_to_hass(self) -> None:
         """Start the RTSP bridge server when the entity is added to HA."""
         await super().async_added_to_hass()
+        if not self._override_stream_url:
+            await self._try_start_rtsp_server()
 
-        if self._override_stream_url:
-            # User has manually configured a stream URL — skip the RTSP server
-            _LOGGER.info(
-                "KodaxHA (%s): using manually configured stream URL: %s",
-                self._camera_ip,
-                self._override_stream_url,
-            )
+    async def _try_start_rtsp_server(self) -> None:
+        """Attempt to resolve MAC and start the RTSP server.
+
+        Called at startup and retried on each coordinator update until it
+        succeeds — handles the case where the camera is asleep at boot.
+        """
+        if self._server_started or self._override_stream_url:
             return
 
         session = async_get_clientsession(self.hass)
 
-        # Resolve MAC address (needed by RTSP server to open VLVL sessions)
-        self._mac = await get_camera_mac(self._camera_ip, session)
         if not self._mac:
-            _LOGGER.warning(
-                "KodaxHA (%s): could not resolve MAC address — live stream unavailable",
+            self._mac = await get_camera_mac(self._camera_ip, session)
+        if not self._mac:
+            _LOGGER.debug(
+                "KodaxHA (%s): MAC not yet available — will retry on next poll",
                 self._camera_ip,
             )
             return
 
-        self._rtsp_server = KodaxRTSPServer(self._camera_ip)
+        if self._rtsp_server is None:
+            self._rtsp_server = KodaxRTSPServer(self._camera_ip)
+
         if await self._rtsp_server.start(session):
             self._server_started = True
             _LOGGER.info(
@@ -147,10 +151,16 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
             )
         else:
             _LOGGER.warning(
-                "KodaxHA (%s): RTSP server failed to start — live stream unavailable",
+                "KodaxHA (%s): RTSP server failed to start — will retry",
                 self._camera_ip,
             )
             self._rtsp_server = None
+
+    def _handle_coordinator_update(self) -> None:
+        """Retry RTSP server startup on each successful coordinator poll."""
+        super()._handle_coordinator_update()
+        if not self._server_started and not self._override_stream_url:
+            asyncio.ensure_future(self._try_start_rtsp_server())
 
     async def async_will_remove_from_hass(self) -> None:
         """Shut down the RTSP server when the entity is removed."""
