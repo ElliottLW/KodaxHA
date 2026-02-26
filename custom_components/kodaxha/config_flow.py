@@ -16,6 +16,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_CAMERA_IP,
+    CONF_LOCAL_IP,
     CONF_SCAN_INTERVAL,
     CONF_SNAPSHOT_URL,
     CONF_STREAM_URL,
@@ -168,6 +169,12 @@ class KodaxHAOptionsFlow(config_entries.OptionsFlow):
                     CONF_SNAPSHOT_URL,
                     description={
                         "suggested_value": current.get(CONF_SNAPSHOT_URL, "")
+                    },
+                ): str,
+                vol.Optional(
+                    CONF_LOCAL_IP,
+                    description={
+                        "suggested_value": current.get(CONF_LOCAL_IP, "")
                     },
                 ): str,
                 vol.Optional(

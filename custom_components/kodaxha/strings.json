@@ -32,11 +32,13 @@
         "data": {
           "stream_url": "RTSP Stream URL",
           "snapshot_url": "Snapshot Image URL",
+          "local_ip": "Local IP Override",
           "scan_interval": "Poll Interval (seconds)"
         },
         "data_description": {
           "stream_url": "e.g. rtsp://192.168.178.36:554/ — used for live video and Homebridge",
-          "snapshot_url": "e.g. http://192.168.178.36/snapshot.jpg — used for still images"
+          "snapshot_url": "e.g. http://192.168.178.36/snapshot.jpg — used for still images",
+          "local_ip": "The IP address of this Home Assistant host as seen by the camera. Leave blank to auto-detect. Set this if streams fail with relay_server_ip_not_found."
         }
       }
     }
