@@ -226,21 +226,26 @@ class VLVLFrameReceiver:
                     timeout=_SESSION_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
-                _LOGGER.debug("VLVL stream timeout — stopping")
+                _LOGGER.debug("VLVL stream timeout — stopping (port %d)", self._port)
                 break
             except (OSError, asyncio.CancelledError):
                 break
 
             if len(raw) < _VLVL_HEADER_SIZE:
+                _LOGGER.debug("VLVL short packet %d bytes", len(raw))
                 continue
             if raw[:4] != _VLVL_MAGIC:
+                _LOGGER.debug("VLVL bad magic %s", raw[:4].hex())
                 continue
             pkt_type = struct.unpack_from(">H", raw, 4)[0]
-            if pkt_type != _VLVL_VIDEO_TYPE:
-                continue
-
             seq_s = struct.unpack_from(">I", raw, 12)[0]
             seq_c = struct.unpack_from(">I", raw, 16)[0]
+            _LOGGER.debug(
+                "VLVL pkt type=0x%04X seqS=%d seqC=%d len=%d",
+                pkt_type, seq_s, seq_c, len(raw),
+            )
+            if pkt_type != _VLVL_VIDEO_TYPE:
+                continue
             payload = raw[_VLVL_HEADER_SIZE:]
 
             if seq_s == seq_c:  # new frame starting
