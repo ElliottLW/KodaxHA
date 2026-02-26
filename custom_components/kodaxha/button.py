@@ -33,48 +33,6 @@ BUTTON_DESCRIPTIONS: tuple[KodaxHAButtonDescription, ...] = (
         icon="mdi:restart",
         command="restart_system",
     ),
-    # ── Melody playback ────────────────────────────────────────────────────
-    KodaxHAButtonDescription(
-        key="melody_stop",
-        name="Stop Melody",
-        icon="mdi:stop-circle",
-        command="melodystop",
-    ),
-    KodaxHAButtonDescription(
-        key="melody1",
-        name="Play Melody 1",
-        icon="mdi:music-note",
-        command="melody1",
-        params={"duration": 2},  # 10 seconds
-    ),
-    KodaxHAButtonDescription(
-        key="melody2",
-        name="Play Melody 2",
-        icon="mdi:music-note",
-        command="melody2",
-        params={"duration": 2},
-    ),
-    KodaxHAButtonDescription(
-        key="melody3",
-        name="Play Melody 3",
-        icon="mdi:music-note",
-        command="melody3",
-        params={"duration": 2},
-    ),
-    KodaxHAButtonDescription(
-        key="melody4",
-        name="Play Melody 4",
-        icon="mdi:music-note",
-        command="melody4",
-        params={"duration": 2},
-    ),
-    KodaxHAButtonDescription(
-        key="melody5",
-        name="Play Melody 5",
-        icon="mdi:music-note",
-        command="melody5",
-        params={"duration": 2},
-    ),
 )
 
 
