@@ -33,12 +33,6 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KodaxHABinarySensorDescription, ...] = (
         is_on_fn=lambda d: d.get("charge") == "1",
     ),
     KodaxHABinarySensorDescription(
-        key="ca",
-        name="Camera Active",
-        device_class=BinarySensorDeviceClass.CONNECTIVITY,
-        is_on_fn=lambda d: d.get("ca") == "1",
-    ),
-    KodaxHABinarySensorDescription(
         key="mvr",
         name="Motion Recording",
         device_class=BinarySensorDeviceClass.MOTION,

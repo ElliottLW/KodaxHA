@@ -104,15 +104,6 @@ SENSOR_DESCRIPTIONS: tuple[KodaxHASensorDescription, ...] = (
         suggested_display_precision=0,
         value_fn=lambda v: int(v),
     ),
-    # ── Charging duration ──────────────────────────────────────────────────
-    KodaxHASensorDescription(
-        key="charge_dur",
-        name="Charge Duration",
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement="min",
-        icon="mdi:battery-clock",
-        value_fn=lambda v: int(v),
-    ),
 )
 
 
