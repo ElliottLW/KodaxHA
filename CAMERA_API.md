@@ -1,6 +1,6 @@
 # Kodak Smart Home Camera — Reverse-Engineered API Reference
 
-Documented against firmware `03.03.92` on a **Kodak W101 / W121** at local IP `192.168.1.100`.
+Documented against firmware `03.03.92` on a **Kodak W101 / W121**.
 All API calls are plain HTTP GET to `http://<camera_ip>/`.
 
 ---
