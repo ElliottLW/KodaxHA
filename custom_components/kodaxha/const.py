@@ -24,6 +24,8 @@ CMD_GET_CAMINFO = "get_caminfo"
 CMD_GET_TEMP_HUMID = "get_temp_humid"
 CMD_GET_VERSION = "get_version"
 CMD_GET_WIFI_STRENGTH = "get_wifi_strength"
+CMD_GET_MAC_ADDRESS = "get_mac_address"
+CMD_GET_SESSION_KEY = "get_session_key"
 CMD_RESTART = "restart_system"
 CMD_MELODY_STOP = "melodystop"
 
