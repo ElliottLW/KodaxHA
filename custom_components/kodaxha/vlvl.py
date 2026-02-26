@@ -145,7 +145,7 @@ class VLVLFrameReceiver:
 
         loop = asyncio.get_running_loop()
         frame_seq_start: int = -1
-        frame_data = bytearray()
+        frame_packets: dict[int, bytes] = {}  # seqC → payload (ordered on yield)
         deadline = loop.time() + _FRAME_TIMEOUT_S
 
         for _ in range(_MAX_PACKETS_PER_FRAME * 2):
@@ -154,7 +154,7 @@ class VLVLFrameReceiver:
                 break
             try:
                 raw: bytes = await asyncio.wait_for(
-                    loop.sock_recv(self._sock, 2048),
+                    loop.sock_recv(self._sock, 65536),
                     timeout=min(remaining, _SESSION_TIMEOUT_S),
                 )
             except (asyncio.TimeoutError, OSError):
@@ -173,30 +173,34 @@ class VLVLFrameReceiver:
             seq_c = struct.unpack_from(">I", raw, 16)[0]
             payload = raw[_VLVL_HEADER_SIZE:]
 
-            new_frame = seq_s == seq_c  # first packet of a new frame
-
-            if new_frame:
-                if frame_data:
-                    # Previous frame is now complete — return it
+            if seq_s == seq_c:  # first packet of a new frame
+                if frame_packets:
+                    # Previous frame complete — reassemble in seqC order and return
+                    assembled = bytearray()
+                    for _, pkt_payload in sorted(frame_packets.items()):
+                        assembled.extend(pkt_payload)
                     _LOGGER.debug(
                         "VLVL frame ready: %d bytes (seqS=%d)",
-                        len(frame_data),
+                        len(assembled),
                         frame_seq_start,
                     )
-                    return CODEC_EXTRADATA + bytes(frame_data)
-                # Start collecting the first frame
+                    return CODEC_EXTRADATA + bytes(assembled)
+                # Start collecting this frame
                 frame_seq_start = seq_s
-                frame_data.extend(payload)
+                frame_packets = {seq_c: payload}
             elif frame_seq_start >= 0 and seq_s == frame_seq_start:
-                frame_data.extend(payload)
-            # else: packet belongs to a preceding frame we started mid-session
+                frame_packets[seq_c] = payload
+            # else: packet belongs to a preceding frame we joined mid-session
 
-        # Timed out or broke out — return whatever we have
-        if frame_data:
+        # Timed out or hit packet limit — return whatever we have
+        if frame_packets:
+            assembled = bytearray()
+            for _, pkt_payload in sorted(frame_packets.items()):
+                assembled.extend(pkt_payload)
             _LOGGER.debug(
-                "VLVL frame (timeout): %d bytes", len(frame_data)
+                "VLVL frame (timeout): %d bytes", len(assembled)
             )
-            return CODEC_EXTRADATA + bytes(frame_data)
+            return CODEC_EXTRADATA + bytes(assembled)
         return None
 
     async def frame_stream(self) -> AsyncIterator[bytes]:
@@ -216,7 +220,7 @@ class VLVLFrameReceiver:
         while True:
             try:
                 raw: bytes = await asyncio.wait_for(
-                    loop.sock_recv(self._sock, 2048),
+                    loop.sock_recv(self._sock, 65536),
                     timeout=_SESSION_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:

@@ -118,23 +118,33 @@ def _nalu_packets(nalu: bytes, ssrc: int, seq: int, ts: int) -> list[bytes]:
 
 
 def _split_nalus(annex_b: bytes) -> list[bytes]:
-    """Split Annex B H264 stream into individual NALUs (including start codes)."""
-    nalus: list[bytes] = []
+    """Split Annex B H264 stream into individual NALUs (without start codes).
+
+    Uses O(n) boundary detection and byte-slice extraction rather than
+    byte-by-byte concatenation, so large IDR frames don't cause quadratic
+    allocation overhead.
+    """
+    # Collect (position, start_code_length) for every start code
+    positions: list[tuple[int, int]] = []
     i = 0
     n = len(annex_b)
-    while i < n:
+    while i < n - 2:
         if annex_b[i : i + 4] == b"\x00\x00\x00\x01":
-            nalus.append(b"")
+            positions.append((i, 4))
             i += 4
         elif annex_b[i : i + 3] == b"\x00\x00\x01":
-            nalus.append(b"")
+            positions.append((i, 3))
             i += 3
-        elif nalus:
-            nalus[-1] = nalus[-1] + annex_b[i : i + 1]
-            i += 1
         else:
-            i += 1  # skip leading junk
-    return [n for n in nalus if n]
+            i += 1
+    nalus: list[bytes] = []
+    for j, (pos, sc_len) in enumerate(positions):
+        start = pos + sc_len
+        end = positions[j + 1][0] if j + 1 < len(positions) else n
+        nalu = annex_b[start:end]
+        if nalu:
+            nalus.append(nalu)
+    return nalus
 
 
 # ── RTSP session handler ────────────────────────────────────────────────────
