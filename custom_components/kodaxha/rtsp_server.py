@@ -160,7 +160,7 @@ class _RTSPClientHandler:
         mac: str,
         local_ip: str,
         server_port: int = 0,
-        stream_lock: asyncio.Lock | None = None,
+        client_queues: list | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -168,13 +168,11 @@ class _RTSPClientHandler:
         self._mac = mac
         self._local_ip = local_ip
         self._server_port = server_port
-        self._stream_lock = stream_lock
+        self._client_queues = client_queues
         self._session_id = f"{random.randint(0, 0xFFFFFFFF):08X}"
         self._ssrc = random.randint(0, 0xFFFFFFFF)
         self._rtp_seq: int = random.randint(0, 0xFFFF)
         self._rtp_ts: int = random.randint(0, 0xFFFFFFFF)
-        self._playing = False
-        self._rx: VLVLFrameReceiver | None = None
 
     # -- RTSP request dispatcher ----------------------------------------
 
@@ -232,9 +230,6 @@ class _RTSPClientHandler:
         except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
             pass
         finally:
-            if self._rx:
-                self._rx.close()
-                self._rx = None
             self._writer.close()
 
     async def _handle_describe(self, cseq: str) -> None:
@@ -283,35 +278,32 @@ class _RTSPClientHandler:
                             f"seq={self._rtp_seq};rtptime={self._rtp_ts}",
             },
         )
-        # Acquire the lock so only one VLVL session is open at a time.
-        # If another client is already streaming, we wait for it to finish
-        # before opening our own session.
-        lock = self._stream_lock
-        if lock is not None:
-            await lock.acquire()
+        # Subscribe to the server's continuous broadcaster.
+        # Frames arrive as bytes objects; None signals the stream has ended.
+        frame_q: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=30)
+        if self._client_queues is not None:
+            self._client_queues.append(frame_q)
         try:
-            rx = VLVLFrameReceiver(self._camera_ip, self._local_ip, self._mac)
-            self._rx = rx
-            if not await rx.open(http_session):
-                return
-            try:
-                async for frame in rx.frame_stream():
-                    nalus = _split_nalus(frame)
-                    for nalu in nalus:
-                        pkts = _nalu_packets(nalu, self._ssrc, self._rtp_seq, self._rtp_ts)
-                        self._rtp_seq = (self._rtp_seq + len(pkts)) & 0xFFFF
-                        for pkt in pkts:
-                            self._writer.write(pkt)
-                    self._rtp_ts = (self._rtp_ts + 6000) & 0xFFFFFFFF
-                    await self._writer.drain()
-            except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
-                pass
-            finally:
-                rx.close()
-                self._rx = None
+            while True:
+                try:
+                    frame = await asyncio.wait_for(frame_q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    break
+                if frame is None:
+                    break
+                nalus = _split_nalus(frame)
+                for nalu in nalus:
+                    pkts = _nalu_packets(nalu, self._ssrc, self._rtp_seq, self._rtp_ts)
+                    self._rtp_seq = (self._rtp_seq + len(pkts)) & 0xFFFF
+                    for pkt in pkts:
+                        self._writer.write(pkt)
+                self._rtp_ts = (self._rtp_ts + 6000) & 0xFFFFFFFF
+                await self._writer.drain()
+        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+            pass
         finally:
-            if lock is not None:
-                lock.release()
+            if self._client_queues is not None and frame_q in self._client_queues:
+                self._client_queues.remove(frame_q)
 
     # -- RTSP response builder ------------------------------------------
 
@@ -363,11 +355,12 @@ class KodaxRTSPServer:
         self._server: asyncio.AbstractServer | None = None
         self._port: int = 0
         self._http_session: Any = None
-        # Serialise VLVL sessions — the camera only supports one active stream
-        # at a time and returns error=500 if a second session is opened while
-        # one is already running.  This lock ensures concurrent RTSP clients
-        # (e.g. HA's stream worker retrying) take turns rather than racing.
-        self._stream_lock: asyncio.Lock = asyncio.Lock()
+        # Fan-out broadcaster: one persistent VLVL session feeds all connected
+        # RTSP clients.  Each client owns one asyncio.Queue in _client_queues;
+        # the background _stream_loop task broadcasts every received frame to
+        # all of them.  No lock is needed — there is only ever one VLVL session.
+        self._client_queues: list[asyncio.Queue] = []
+        self._stream_task: asyncio.Task | None = None
 
     @property
     def rtsp_url(self) -> str | None:
@@ -416,10 +409,26 @@ class KodaxRTSPServer:
             self._camera_ip,
             self._mac,
         )
+        # Start the continuous background broadcaster.
+        self._stream_task = asyncio.ensure_future(self._stream_loop())
         return True
 
     async def stop(self) -> None:
-        """Stop accepting new clients and close the server socket."""
+        """Cancel the broadcaster task, drain client queues, and close."""
+        if self._stream_task is not None:
+            self._stream_task.cancel()
+            try:
+                await self._stream_task
+            except asyncio.CancelledError:
+                pass
+            self._stream_task = None
+        # Signal any waiting RTSP clients that the stream has ended.
+        for q in list(self._client_queues):
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        self._client_queues.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -442,7 +451,57 @@ class KodaxRTSPServer:
             self._mac,  # type: ignore[arg-type]
             self._local_ip,
             self._port,
-            self._stream_lock,
+            self._client_queues,
         )
         await handler.run(self._http_session)
         _LOGGER.debug("RTSP client disconnected from %s", peer)
+
+    async def _stream_loop(self) -> None:
+        """Continuously receive VLVL frames and broadcast to all subscribers.
+
+        Opens a single VLVL session and fans every frame out to all
+        per-client asyncio.Queue instances in self._client_queues.  When the
+        session ends (timeout or error) it waits briefly then reopens.  The
+        loop runs for the lifetime of the server and exits only when the task
+        is cancelled (i.e. server.stop() is called).
+        """
+        _RECONNECT_DELAY_S = 2.0
+
+        while True:
+            rx = VLVLFrameReceiver(
+                self._camera_ip,
+                self._local_ip,
+                self._mac,  # type: ignore[arg-type]
+            )
+            try:
+                opened = await rx.open(self._http_session)
+            except asyncio.CancelledError:
+                rx.close()
+                return
+            if not opened:
+                try:
+                    await asyncio.sleep(_RECONNECT_DELAY_S)
+                except asyncio.CancelledError:
+                    return
+                continue
+
+            try:
+                async for frame in rx.frame_stream():
+                    for q in list(self._client_queues):
+                        try:
+                            q.put_nowait(frame)
+                        except asyncio.QueueFull:
+                            pass  # slow client — drop frame rather than block
+            except asyncio.CancelledError:
+                rx.close()
+                return  # server shutting down
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("VLVL broadcaster error: %s", exc)
+            finally:
+                rx.close()
+
+            # Brief cooldown before reconnecting.
+            try:
+                await asyncio.sleep(_RECONNECT_DELAY_S)
+            except asyncio.CancelledError:
+                return
