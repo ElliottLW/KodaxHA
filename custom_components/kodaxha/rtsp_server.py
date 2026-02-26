@@ -361,6 +361,10 @@ class KodaxRTSPServer:
         # all of them.  No lock is needed — there is only ever one VLVL session.
         self._client_queues: list[asyncio.Queue] = []
         self._stream_task: asyncio.Task | None = None
+        # Most recently received H264 frame (Annex B, with CODEC_EXTRADATA).
+        # Used by async_camera_image to produce JPEG thumbnails without opening
+        # a competing VLVL session.
+        self._last_frame: bytes | None = None
 
     @property
     def rtsp_url(self) -> str | None:
@@ -368,6 +372,15 @@ class KodaxRTSPServer:
         if self._port:
             return f"rtsp://{_RTSP_SERVER_BIND_IP}:{self._port}/"
         return None
+
+    def get_last_frame(self) -> bytes | None:
+        """Return the most recently received H264 frame (Annex B + extradata).
+
+        Used by async_camera_image to produce JPEG thumbnails without opening
+        a competing VLVL session while the broadcaster is already running.
+        Returns None if no frame has been received yet.
+        """
+        return self._last_frame
 
     async def start(self, http_session: Any) -> bool:  # noqa: ANN001
         """Bind the RTSP port and start accepting clients.
@@ -487,6 +500,7 @@ class KodaxRTSPServer:
 
             try:
                 async for frame in rx.frame_stream():
+                    self._last_frame = frame  # cache for thumbnail use
                     for q in list(self._client_queues):
                         try:
                             q.put_nowait(frame)

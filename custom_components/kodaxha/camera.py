@@ -36,6 +36,7 @@ from .rtsp_server import KodaxRTSPServer
 from .sensor import _device_info
 from .vlvl import VLVLFrameReceiver, get_camera_mac, get_local_ip_for, h264_to_jpeg
 
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -210,18 +211,21 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
             except (aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Snapshot URL fetch failed: %s", err)
 
-        # Option 2: grab a frame from our own RTSP server (avoids opening a
-        # second concurrent VLVL session which the camera rejects).
+        # Option 2: use the latest frame cached by the broadcaster.
+        # This avoids opening a competing VLVL session (the camera only allows
+        # one at a time) while still producing a fresh thumbnail.
         if self._rtsp_server is not None and self._server_started:
-            rtsp_url = self._rtsp_server.rtsp_url
-            if rtsp_url:
-                jpeg = await _rtsp_to_jpeg(rtsp_url)
+            frame = self._rtsp_server.get_last_frame()
+            if frame is not None:
+                jpeg = await h264_to_jpeg(frame)
                 if jpeg:
                     return jpeg
 
-        # Option 3: open a fresh VLVL session directly (only when RTSP server
-        # is not running, e.g. first thumbnail before any stream has started).
-        if not self._mac:
+        # Option 3: open a fresh VLVL session directly — only when the RTSP
+        # broadcaster is NOT running (e.g. first thumbnail before server starts).
+        # Do NOT attempt this while the broadcaster is active: the camera
+        # returns error=500 for a second concurrent session.
+        if self._server_started or not self._mac:
             return None
 
         session = async_get_clientsession(self.hass)
@@ -247,33 +251,3 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
         )
         return None
 
-
-async def _rtsp_to_jpeg(rtsp_url: str) -> bytes | None:
-    """Grab one JPEG frame from an RTSP URL using ffmpeg.
-
-    Used to pull a thumbnail from our own local RTSP server without opening
-    a second concurrent VLVL session (which the camera rejects).
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
-            "-frames:v", "1",
-            "-vcodec", "mjpeg",
-            "-q:v", "2",
-            "-f", "image2",
-            "pipe:1",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-        if stdout and stdout[:2] == b"\xff\xd8":
-            return stdout
-    except FileNotFoundError:
-        pass
-    except (asyncio.TimeoutError, OSError) as err:
-        _LOGGER.debug("_rtsp_to_jpeg failed: %s", err)
-    return None
