@@ -30,6 +30,19 @@ A HACS-installable custom integration for **Kodak Smart Home cameras** after Kod
 
 ## Installation
 
+### Via HACS (Recommended)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ElliottLW&repository=KodaxHA&category=integration)
+
+1. Click the button above, **or** manually add this repository in HACS:
+   - Open HACS in Home Assistant
+   - Go to **Integrations**
+   - Click the three-dot menu (⋮) in the top-right corner and select **Custom repositories**
+   - Enter `https://github.com/ElliottLW/KodaxHA` as the repository URL and select **Integration** as the category
+   - Click **Add**
+2. Search for **KodaxHA** in HACS and click **Download**
+3. Restart Home Assistant
+
 ### Manual
 
 Copy the `custom_components/kodaxha/` folder into your HA config directory (alongside `configuration.yaml`), then restart.
