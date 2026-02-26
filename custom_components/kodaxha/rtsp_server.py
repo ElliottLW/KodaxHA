@@ -160,6 +160,7 @@ class _RTSPClientHandler:
         mac: str,
         local_ip: str,
         server_port: int = 0,
+        stream_lock: asyncio.Lock | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -167,6 +168,7 @@ class _RTSPClientHandler:
         self._mac = mac
         self._local_ip = local_ip
         self._server_port = server_port
+        self._stream_lock = stream_lock
         self._session_id = f"{random.randint(0, 0xFFFFFFFF):08X}"
         self._ssrc = random.randint(0, 0xFFFFFFFF)
         self._rtp_seq: int = random.randint(0, 0xFFFF)
@@ -281,27 +283,35 @@ class _RTSPClientHandler:
                             f"seq={self._rtp_seq};rtptime={self._rtp_ts}",
             },
         )
-        # Start VLVL session and forward frames
-        rx = VLVLFrameReceiver(self._camera_ip, self._local_ip, self._mac)
-        self._rx = rx
-        if not await rx.open(http_session):
-            return
+        # Acquire the lock so only one VLVL session is open at a time.
+        # If another client is already streaming, we wait for it to finish
+        # before opening our own session.
+        lock = self._stream_lock
+        if lock is not None:
+            await lock.acquire()
         try:
-            async for frame in rx.frame_stream():
-                nalus = _split_nalus(frame)
-                for nalu in nalus:
-                    pkts = _nalu_packets(nalu, self._ssrc, self._rtp_seq, self._rtp_ts)
-                    self._rtp_seq = (self._rtp_seq + len(pkts)) & 0xFFFF
-                    for pkt in pkts:
-                        self._writer.write(pkt)
-                # Advance RTP timestamp (90 kHz clock, 15 fps ≈ 6000 ticks)
-                self._rtp_ts = (self._rtp_ts + 6000) & 0xFFFFFFFF
-                await self._writer.drain()
-        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
-            pass
+            rx = VLVLFrameReceiver(self._camera_ip, self._local_ip, self._mac)
+            self._rx = rx
+            if not await rx.open(http_session):
+                return
+            try:
+                async for frame in rx.frame_stream():
+                    nalus = _split_nalus(frame)
+                    for nalu in nalus:
+                        pkts = _nalu_packets(nalu, self._ssrc, self._rtp_seq, self._rtp_ts)
+                        self._rtp_seq = (self._rtp_seq + len(pkts)) & 0xFFFF
+                        for pkt in pkts:
+                            self._writer.write(pkt)
+                    self._rtp_ts = (self._rtp_ts + 6000) & 0xFFFFFFFF
+                    await self._writer.drain()
+            except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                pass
+            finally:
+                rx.close()
+                self._rx = None
         finally:
-            rx.close()
-            self._rx = None
+            if lock is not None:
+                lock.release()
 
     # -- RTSP response builder ------------------------------------------
 
@@ -353,6 +363,11 @@ class KodaxRTSPServer:
         self._server: asyncio.AbstractServer | None = None
         self._port: int = 0
         self._http_session: Any = None
+        # Serialise VLVL sessions — the camera only supports one active stream
+        # at a time and returns error=500 if a second session is opened while
+        # one is already running.  This lock ensures concurrent RTSP clients
+        # (e.g. HA's stream worker retrying) take turns rather than racing.
+        self._stream_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def rtsp_url(self) -> str | None:
@@ -427,6 +442,7 @@ class KodaxRTSPServer:
             self._mac,  # type: ignore[arg-type]
             self._local_ip,
             self._port,
+            self._stream_lock,
         )
         await handler.run(self._http_session)
         _LOGGER.debug("RTSP client disconnected from %s", peer)
