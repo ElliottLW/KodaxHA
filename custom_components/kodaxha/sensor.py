@@ -46,10 +46,11 @@ SENSOR_DESCRIPTIONS: tuple[KodaxHASensorDescription, ...] = (
         suggested_display_precision=0,
     ),
     # ── Network ────────────────────────────────────────────────────────────
+    # Camera reports WiFi as 0-100 % (not dBm), so no device_class to avoid
+    # HA's unit validation error for signal_strength (which expects dBm/dB).
     KodaxHASensorDescription(
         key="wifi",
         name="WiFi Signal",
-        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         suggested_display_precision=0,
