@@ -5,12 +5,13 @@ UDP P2P protocol called VLVL (magic bytes 'VLVL').  This platform:
 
   1. Resolves the camera's MAC address via get_mac_address.
   2. Starts a minimal asyncio RTSP server bound to localhost.
-  3. On each client PLAY request, opens a VLVL session to the camera and
-     forwards H264 NALUs as RTP/H264 over TCP.
+  3. Streams from the camera only while an RTSP client is watching (the
+     camera is battery powered), forwarding H264 as RTP/H264 over TCP.
   4. Returns the RTSP URL from stream_source() so HA's stream integration
      (and Chromecast / frontend) can display the live view.
-  5. Provides snapshots by capturing one H264 frame and converting with ffmpeg
-     (falls back to the configured snapshot_url if ffmpeg is unavailable).
+  5. Provides snapshots from the live stream while it runs, otherwise by
+     capturing one frame at most every couple of minutes, converted with
+     ffmpeg (the configured snapshot_url takes precedence).
 
 Architecture:
   ┌──────────────┐  UDP VLVL  ┌────────────────┐  TCP RTSP  ┌──────────────┐
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -38,6 +40,9 @@ from .vlvl import VLVLFrameReceiver, get_camera_mac, get_local_ip_for, h264_to_j
 
 
 _LOGGER = logging.getLogger(__name__)
+
+# While nobody is watching, refresh the thumbnail at most this often.
+_SNAPSHOT_MAX_AGE_S = 120
 
 
 async def async_setup_entry(
@@ -111,6 +116,8 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
         else:
             _LOGGER.debug("KodaxHA (%s): auto-detected local IP %s", camera_ip, auto_ip)
         self._server_started = False
+        self._snapshot_cache: tuple[float, bytes] | None = None  # (taken at, JPEG)
+        self._snapshot_lock = asyncio.Lock()
 
     # ── HA entity lifecycle ─────────────────────────────────────────────────
 
@@ -211,38 +218,46 @@ class KodaxHACamera(CoordinatorEntity[KodaxHACoordinator], Camera):
             except (aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Snapshot URL fetch failed: %s", err)
 
-        # Option 2: use the latest frame cached by the broadcaster.
-        # This avoids opening a competing VLVL session (the camera only allows
-        # one at a time) while still producing a fresh thumbnail.
-        if self._rtsp_server is not None and self._server_started:
+        # Option 2: someone is watching, so use the live stream's latest
+        # keyframe. This avoids opening a competing VLVL session (the camera
+        # only allows one at a time).
+        streaming = self._rtsp_server is not None and self._rtsp_server.is_streaming
+        if streaming:
             frame = self._rtsp_server.get_last_frame()
             if frame is not None:
                 jpeg = await h264_to_jpeg(frame)
                 if jpeg:
+                    self._snapshot_cache = (time.monotonic(), jpeg)
                     return jpeg
+            return self._snapshot_cache[1] if self._snapshot_cache else None
 
-        # Option 3: open a fresh VLVL session directly — only when the RTSP
-        # broadcaster is NOT running (e.g. first thumbnail before server starts).
-        # Do NOT attempt this while the broadcaster is active: the camera
-        # returns error=500 for a second concurrent session.
-        if self._server_started or not self._mac:
+        # Option 3: nobody is watching — grab one frame with a short session,
+        # at most every _SNAPSHOT_MAX_AGE_S. Each session lingers on the camera
+        # for ~30 s and blocks the next one, so frequent thumbnail refreshes
+        # would delay live view from starting.
+        if self._snapshot_cache and time.monotonic() - self._snapshot_cache[0] < _SNAPSHOT_MAX_AGE_S:
+            return self._snapshot_cache[1]
+        if not self._mac:
             return None
+        async with self._snapshot_lock:
+            if self._snapshot_cache and time.monotonic() - self._snapshot_cache[0] < _SNAPSHOT_MAX_AGE_S:
+                return self._snapshot_cache[1]  # another request just refreshed it
+            session = async_get_clientsession(self.hass)
+            rx = VLVLFrameReceiver(self._camera_ip, self._local_ip, self._mac)
+            try:
+                if not await rx.open(session):
+                    return self._snapshot_cache[1] if self._snapshot_cache else None
+                frame = await rx.receive_one_frame()
+            finally:
+                rx.close()
 
-        session = async_get_clientsession(self.hass)
-        rx = VLVLFrameReceiver(self._camera_ip, self._local_ip, self._mac)
-        try:
-            if not await rx.open(session):
-                return None
-            frame = await rx.receive_one_frame()
-        finally:
-            rx.close()
+            if frame is None:
+                return self._snapshot_cache[1] if self._snapshot_cache else None
 
-        if frame is None:
-            return None
-
-        jpeg = await h264_to_jpeg(frame)
-        if jpeg:
-            return jpeg
+            jpeg = await h264_to_jpeg(frame)
+            if jpeg:
+                self._snapshot_cache = (time.monotonic(), jpeg)
+                return jpeg
 
         _LOGGER.debug(
             "KodaxHA (%s): ffmpeg unavailable — cannot produce JPEG snapshot. "

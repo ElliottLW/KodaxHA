@@ -9,14 +9,19 @@ Architecture:
   │ Kodak camera │──────────►│  VLVLFrameReceiver│◄──────────►│  HA stream │
   └──────────────┘            └──────────────────┘            └────────────┘
 
-The server listens on an OS-assigned TCP port (loopback only) and handles
-one client at a time.  It requests a new VLVL session for each PLAY command.
+The server listens on an OS-assigned TCP port (loopback only). One VLVL
+session feeds every connected client, and it only runs while someone is
+watching: it starts on the first PLAY and stops _IDLE_STOP_S after the last
+client leaves (the camera is battery powered, and streaming costs power and
+Wi-Fi airtime).
 
 Protocol notes:
   • RTSP is implemented as a subset: OPTIONS / DESCRIBE / SETUP / PLAY / TEARDOWN
   • Video is delivered as RTP H264 RFC 6184 over TCP (interleaved, RFC 2326 §10.12)
   • NALUs larger than _RTP_MAX_PAYLOAD_BYTES are fragmented with FU-A (RFC 6184 §5.8)
-  • Audio is not present in the Kodak stream and is therefore not offered
+  • RTP timestamps come from the camera's capture times, so players can smooth
+    out the bursts the camera's Wi-Fi delivers frames in
+  • The camera's audio (G.722, 16 kHz) is not offered yet
 """
 from __future__ import annotations
 
@@ -27,14 +32,16 @@ import random
 import socket
 import struct
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .vlvl import (
     CODEC_EXTRADATA,
     PPS_B64,
+    PROFILE_LEVEL_ID,
     SPS_B64,
     VLVLFrameReceiver,
     get_camera_mac,
+    is_keyframe,
     get_local_ip_for,
 )
 
@@ -43,6 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 _RTP_MAX_PAYLOAD_BYTES = 1400  # stay safely below typical MTU
 _RTSP_SERVER_BIND_IP = "127.0.0.1"  # loopback only — HA accesses via localhost
 _MAX_CLIENTS_QUEUED = 2
+_IDLE_STOP_S = 30.0  # keep streaming this long after the last viewer leaves
 
 # ── RTP helpers ────────────────────────────────────────────────────────────
 
@@ -160,7 +168,8 @@ class _RTSPClientHandler:
         mac: str,
         local_ip: str,
         server_port: int = 0,
-        client_queues: list | None = None,
+        subscribe: Callable[[asyncio.Queue], None] | None = None,
+        unsubscribe: Callable[[asyncio.Queue], None] | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -168,7 +177,8 @@ class _RTSPClientHandler:
         self._mac = mac
         self._local_ip = local_ip
         self._server_port = server_port
-        self._client_queues = client_queues
+        self._subscribe = subscribe or (lambda q: None)
+        self._unsubscribe = unsubscribe or (lambda q: None)
         self._session_id = f"{random.randint(0, 0xFFFFFFFF):08X}"
         self._ssrc = random.randint(0, 0xFFFFFFFF)
         self._rtp_seq: int = random.randint(0, 0xFFFF)
@@ -243,7 +253,7 @@ class _RTSPClientHandler:
             "m=video 0 RTP/AVP 96\r\n"
             "a=control:trackID=0\r\n"
             "a=rtpmap:96 H264/90000\r\n"
-            f"a=fmtp:96 packetization-mode=1;profile-level-id=42C01F;"
+            f"a=fmtp:96 packetization-mode=1;profile-level-id={PROFILE_LEVEL_ID};"
             f"sprop-parameter-sets={SPS_B64},{PPS_B64}\r\n"
         )
         body = sdp.encode()
@@ -279,31 +289,45 @@ class _RTSPClientHandler:
             },
         )
         # Subscribe to the server's continuous broadcaster.
-        # Frames arrive as bytes objects; None signals the stream has ended.
-        frame_q: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=30)
-        if self._client_queues is not None:
-            self._client_queues.append(frame_q)
+        # Items are (frame, camera capture ms); None signals the stream ended.
+        frame_q: asyncio.Queue[tuple[bytes, int] | None] = asyncio.Queue(maxsize=30)
+        self._subscribe(frame_q)  # starts the camera stream if it isn't running
+        start_ts = self._rtp_ts
+        base_ms: int | None = None
+        last_ms = 0
+        waiting_for_key = True
         try:
             while True:
                 try:
-                    frame = await asyncio.wait_for(frame_q.get(), timeout=30.0)
+                    item = await asyncio.wait_for(frame_q.get(), timeout=30.0)
                 except asyncio.TimeoutError:
                     break
-                if frame is None:
+                if item is None:
                     break
+                frame, capture_ms = item
+                if waiting_for_key:
+                    if not is_keyframe(frame):
+                        continue  # P-frames are useless until the first keyframe
+                    waiting_for_key = False
+                # Stamp with the camera's capture time, not arrival time: the
+                # camera's Wi-Fi delivers frames in bursts, and capture times
+                # let the player show them evenly.
+                if base_ms is None or not 0 <= capture_ms - last_ms < 5000:
+                    # first frame, or the camera clock jumped (new session)
+                    start_ts, base_ms = (self._rtp_ts + 6000) & 0xFFFFFFFF, capture_ms
+                last_ms = capture_ms
+                self._rtp_ts = (start_ts + (capture_ms - base_ms) * 90) & 0xFFFFFFFF
                 nalus = _split_nalus(frame)
                 for nalu in nalus:
                     pkts = _nalu_packets(nalu, self._ssrc, self._rtp_seq, self._rtp_ts)
                     self._rtp_seq = (self._rtp_seq + len(pkts)) & 0xFFFF
                     for pkt in pkts:
                         self._writer.write(pkt)
-                self._rtp_ts = (self._rtp_ts + 6000) & 0xFFFFFFFF
                 await self._writer.drain()
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
             pass
         finally:
-            if self._client_queues is not None and frame_q in self._client_queues:
-                self._client_queues.remove(frame_q)
+            self._unsubscribe(frame_q)
 
     # -- RTSP response builder ------------------------------------------
 
@@ -355,16 +379,18 @@ class KodaxRTSPServer:
         self._server: asyncio.AbstractServer | None = None
         self._port: int = 0
         self._http_session: Any = None
-        # Fan-out broadcaster: one persistent VLVL session feeds all connected
-        # RTSP clients.  Each client owns one asyncio.Queue in _client_queues;
-        # the background _stream_loop task broadcasts every received frame to
-        # all of them.  No lock is needed — there is only ever one VLVL session.
+        # Fan-out broadcaster: one VLVL session feeds all connected RTSP
+        # clients.  Each client owns one asyncio.Queue in _client_queues; the
+        # _stream_loop task (running only while there are clients) broadcasts
+        # every received frame to all of them.
         self._client_queues: list[asyncio.Queue] = []
+        self._resync: set[asyncio.Queue] = set()  # slow clients waiting for a keyframe
         self._stream_task: asyncio.Task | None = None
-        # Most recently received H264 frame (Annex B, with CODEC_EXTRADATA).
-        # Used by async_camera_image to produce JPEG thumbnails without opening
+        self._idle_timer: asyncio.TimerHandle | None = None
+        # Most recent keyframe while streaming, for thumbnails without opening
         # a competing VLVL session.
         self._last_frame: bytes | None = None
+        self._last_frame_at = 0.0
 
     @property
     def rtsp_url(self) -> str | None:
@@ -373,14 +399,49 @@ class KodaxRTSPServer:
             return f"rtsp://{_RTSP_SERVER_BIND_IP}:{self._port}/"
         return None
 
+    @property
+    def is_streaming(self) -> bool:
+        """True while the camera stream is running (someone is watching)."""
+        return self._stream_task is not None and not self._stream_task.done()
+
     def get_last_frame(self) -> bytes | None:
-        """Return the most recently received H264 frame (Annex B + extradata).
+        """Return the latest keyframe while streaming, or None.
 
         Used by async_camera_image to produce JPEG thumbnails without opening
-        a competing VLVL session while the broadcaster is already running.
-        Returns None if no frame has been received yet.
+        a competing VLVL session.  Frames older than a few seconds (stream
+        stalled or stopped) are not returned.
         """
-        return self._last_frame
+        if self.is_streaming and time.monotonic() - self._last_frame_at < 5:
+            return self._last_frame
+        return None
+
+    # -- on-demand streaming -------------------------------------------
+
+    def _add_client(self, queue: asyncio.Queue) -> None:
+        self._client_queues.append(queue)
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        if not self.is_streaming:
+            _LOGGER.debug("KodaxRTSPServer: viewer connected, starting camera stream")
+            self._stream_task = asyncio.ensure_future(self._stream_loop())
+
+    def _remove_client(self, queue: asyncio.Queue) -> None:
+        if queue in self._client_queues:
+            self._client_queues.remove(queue)
+        self._resync.discard(queue)
+        if not self._client_queues and self._idle_timer is None and self.is_streaming:
+            # Linger briefly: HA's stream worker often reconnects straight away.
+            self._idle_timer = asyncio.get_running_loop().call_later(
+                _IDLE_STOP_S, self._stop_if_idle
+            )
+
+    def _stop_if_idle(self) -> None:
+        self._idle_timer = None
+        if not self._client_queues and self._stream_task is not None:
+            _LOGGER.debug("KodaxRTSPServer: no viewers, stopping camera stream")
+            self._stream_task.cancel()
+            self._stream_task = None
 
     async def start(self, http_session: Any) -> bool:  # noqa: ANN001
         """Bind the RTSP port and start accepting clients.
@@ -422,12 +483,14 @@ class KodaxRTSPServer:
             self._camera_ip,
             self._mac,
         )
-        # Start the continuous background broadcaster.
-        self._stream_task = asyncio.ensure_future(self._stream_loop())
+        # The camera stream itself starts when the first client sends PLAY.
         return True
 
     async def stop(self) -> None:
         """Cancel the broadcaster task, drain client queues, and close."""
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
         if self._stream_task is not None:
             self._stream_task.cancel()
             try:
@@ -464,19 +527,19 @@ class KodaxRTSPServer:
             self._mac,  # type: ignore[arg-type]
             self._local_ip,
             self._port,
-            self._client_queues,
+            subscribe=self._add_client,
+            unsubscribe=self._remove_client,
         )
         await handler.run(self._http_session)
         _LOGGER.debug("RTSP client disconnected from %s", peer)
 
     async def _stream_loop(self) -> None:
-        """Continuously receive VLVL frames and broadcast to all subscribers.
+        """Receive VLVL frames and broadcast them to all subscribers.
 
         Opens a single VLVL session and fans every frame out to all
         per-client asyncio.Queue instances in self._client_queues.  When the
-        session ends (timeout or error) it waits briefly then reopens.  The
-        loop runs for the lifetime of the server and exits only when the task
-        is cancelled (i.e. server.stop() is called).
+        session ends (timeout or error) it waits briefly then reopens.  Runs
+        while there are viewers; cancelled by _stop_if_idle() or stop().
         """
         _RECONNECT_DELAY_S = 2.0
 
@@ -499,13 +562,28 @@ class KodaxRTSPServer:
                 continue
 
             try:
-                async for frame in rx.frame_stream():
-                    self._last_frame = frame  # cache for thumbnail use
+                async for frame, capture_ms in rx.frame_stream(with_timestamps=True):
+                    key = is_keyframe(frame)
+                    if key:
+                        self._last_frame = frame  # thumbnails need a keyframe
+                        self._last_frame_at = time.monotonic()
                     for q in list(self._client_queues):
+                        if q in self._resync:
+                            if not key:
+                                continue
+                            self._resync.discard(q)
                         try:
-                            q.put_nowait(frame)
+                            q.put_nowait((frame, capture_ms))
                         except asyncio.QueueFull:
-                            pass  # slow client — drop frame rather than block
+                            # A slow client can't skip a P-frame without
+                            # smearing: drop its backlog and restart it at the
+                            # next keyframe instead.
+                            while not q.empty():
+                                q.get_nowait()
+                            if key:
+                                q.put_nowait((frame, capture_ms))
+                            else:
+                                self._resync.add(q)
             except asyncio.CancelledError:
                 rx.close()
                 return  # server shutting down
