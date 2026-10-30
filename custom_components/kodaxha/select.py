@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CMD_SET_VIDEO_BITRATE,
     CONF_CAMERA_IP,
     DOMAIN,
     FLIP_OPTIONS,
@@ -21,6 +22,8 @@ from .const import (
     RESOLUTION_VALUES,
     SENSITIVITY_OPTIONS,
     SENSITIVITY_VALUES,
+    VIDEO_QUALITY_OPTIONS,
+    VIDEO_QUALITY_VALUES,
 )
 from .coordinator import KodaxHACoordinator
 from .sensor import _device_info
@@ -42,6 +45,7 @@ async def async_setup_entry(
             KodaxHAResolutionSelect(coordinator, camera_ip),
             KodaxHAMotionSensitivitySelect(coordinator, camera_ip),
             KodaxHAOrientationSelect(coordinator, camera_ip),
+            KodaxHAVideoQualitySelect(coordinator, camera_ip),
         ]
     )
 
@@ -180,5 +184,40 @@ class KodaxHAOrientationSelect(_KodaxHASelectBase):
         if value is not None:
             await self.coordinator.async_send_command(
                 "set_flipup", {"value": value}
+            )
+            await self.coordinator.async_request_refresh()
+
+
+# ── Video quality (bitrate) ─────────────────────────────────────────────────
+
+class KodaxHAVideoQualitySelect(_KodaxHASelectBase):
+    """Encoder bitrate. 550 kbps is recommended (see const.VIDEO_QUALITY_OPTIONS).
+
+    The camera falls back to 550 by itself after power cuts and when its flow
+    control backs off, so this shows the camera's current value.
+    """
+
+    _attr_name = "Video Quality"
+    _attr_icon = "mdi:high-definition-box"
+    _attr_options = list(VIDEO_QUALITY_OPTIONS)
+
+    def __init__(self, coordinator: KodaxHACoordinator, camera_ip: str) -> None:
+        super().__init__(coordinator, camera_ip)
+        self._attr_unique_id = f"kodaxha_{camera_ip.replace('.', '_')}_video_quality"
+
+    @property
+    def current_option(self) -> str | None:
+        if not self.coordinator.data:
+            return None
+        try:
+            return VIDEO_QUALITY_VALUES.get(int(self.coordinator.data.get("brate", "")))
+        except ValueError:
+            return None
+
+    async def async_select_option(self, option: str) -> None:
+        value = VIDEO_QUALITY_OPTIONS.get(option)
+        if value is not None:
+            await self.coordinator.async_send_command(
+                CMD_SET_VIDEO_BITRATE, {"value": value}
             )
             await self.coordinator.async_request_refresh()

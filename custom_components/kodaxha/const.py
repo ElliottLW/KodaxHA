@@ -29,6 +29,25 @@ CMD_GET_MAC_ADDRESS = "get_mac_address"
 CMD_GET_SESSION_KEY = "get_session_key"
 CMD_RESTART = "restart_system"
 CMD_MELODY_STOP = "melodystop"
+CMD_SET_VIDEO_BITRATE = "set_video_bitrate"
+
+# Background Wi-Fi scans (for a Kodak range extender / baby-monitor parent
+# unit). They take the camera's radio off-channel and roughly double the
+# half-second stalls in the live stream, so the coordinator switches them off.
+# Note: these commands have no "set_" prefix (rtscan&value=0).
+WIFI_SCAN_FLAGS = ("rtscan", "puscan")
+
+# ── Video quality (bitrate) options ─────────────────────────────────────────
+# 550 kbps (the camera's default) streams best: above it the camera skips
+# more frames over Wi-Fi, which shows as smearing until the next keyframe.
+VIDEO_QUALITY_OPTIONS: dict[str, int] = {
+    "400 kbps (low)": 400,
+    "550 kbps (recommended)": 550,
+    "700 kbps": 700,
+    "1000 kbps (more smearing)": 1000,
+    "1200 kbps (frequent smearing)": 1200,
+}
+VIDEO_QUALITY_VALUES: dict[int, str] = {v: k for k, v in VIDEO_QUALITY_OPTIONS.items()}
 
 # ── Night vision options ────────────────────────────────────────────────────
 NIGHT_VISION_AUTO = "auto"

@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, CMD_GET_CAMINFO, CMD_GET_TEMP_HUMID
+from .const import DOMAIN, CMD_GET_CAMINFO, CMD_GET_TEMP_HUMID, WIFI_SCAN_FLAGS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,6 +110,17 @@ class KodaxHACoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     raise UpdateFailed(
                         f"Camera at {self.camera_ip} did not respond to get_caminfo"
                     )
+
+                # Background Wi-Fi scanning is on by default and causes regular
+                # ~0.5 s radio stalls in the live stream; keep it off.
+                for flag in WIFI_SCAN_FLAGS:
+                    if data.get(flag) == "1":
+                        _LOGGER.info(
+                            "KodaxHA (%s): turning off camera Wi-Fi scanning (%s)",
+                            self.camera_ip,
+                            flag,
+                        )
+                        await self.async_send_command(flag, {"value": 0})
 
                 # Temperature / humidity — only if the sensor is present
                 # (the camera returns -273 / -1 when there is no sensor)
