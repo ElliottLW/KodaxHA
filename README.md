@@ -6,14 +6,18 @@ A HACS-installable custom integration for **Kodak Smart Home cameras** after Kod
 
 ## Features
 
-- 📷 **Camera entity** — live H264 video via built-in VLVL→RTSP bridge; JPEG snapshots via ffmpeg; full HomeKit support
+- 📷 **Camera entity** — live H.264 video (~11 fps, 1280×720) via a built-in VLVL→RTSP bridge; JPEG snapshots via ffmpeg; HomeKit support
 - 📊 **Sensors** — battery, WiFi signal, temperature, humidity, SD card usage, bitrate
-- 🔔 **Binary sensors** — charging status, camera active, motion recording
+- 🔔 **Binary sensors** — charging status, motion recording
 - 🔀 **Switches** — motion detection, sound detection, blue LED, auto-remove old clips
 - 🎛️ **Selects** — night vision, video resolution, motion sensitivity, camera orientation
-- 🎵 **Buttons** — play melody 1–5, stop melody, restart camera
-- 🃏 **Lovelace card** — self-registering dashboard card with all controls in one panel
+- 🔄 **Button** — restart camera
+- 🃏 **Lovelace card** — self-registering dashboard card with the main controls in one panel
 - ⚙️ **Zero re-add config** — stream/snapshot URLs and poll interval changeable via *Configure* at any time
+
+Pan & tilt, sound, motion zones, Wi-Fi changes and first-time setup of a new
+camera are coming in **KodaxWeb**, a standalone companion web app that will be
+published in its own repository.
 
 ---
 
@@ -52,7 +56,7 @@ Copy the `custom_components/kodaxha/` folder into your HA config directory (alon
 ## Setup
 
 1. **Settings → Integrations → Add Integration → KodaxHA**
-2. Enter your camera's local IP address (e.g. `192.168.178.36`)
+2. Enter your camera's local IP address (e.g. `192.168.1.100`)
 3. Optionally set the poll interval (default 30 s)
 4. Click **Submit** — HA will verify the camera is reachable
 
@@ -66,7 +70,7 @@ Add the card to any dashboard:
 
 ```yaml
 type: custom:kodaxha-card
-camera_ip: 192.168.178.36
+camera_ip: 192.168.1.100
 ```
 
 The card shows:
@@ -78,7 +82,6 @@ The card shows:
 | Stats | Battery, WiFi, temperature, humidity, SD usage |
 | Detection | Motion & sound toggles, sensitivity selector |
 | Settings | Night vision, resolution, orientation, blue LED |
-| Melodies | Play melody 1–5, stop button |
 | System | Restart camera button |
 
 > If the feed shows a placeholder, ensure `ffmpeg` is installed on the HA host (see [Live View](#live-view) below).
@@ -91,12 +94,15 @@ KodaxHA includes a built-in **VLVL → RTSP bridge** that enables live video dir
 
 ### How it works
 
-Kodak cameras stream H264 video using a proprietary UDP P2P protocol called **VLVL**. The integration:
+Kodak cameras stream H.264 video using a proprietary, AES-encrypted UDP protocol called **VLVL**. The integration:
 
 1. Fetches the camera's MAC address automatically
-2. Starts a minimal RTSP server bound to `localhost` (chosen automatically, no config needed)
-3. On each request, opens a VLVL session to the camera and forwards H264 NALUs as RTP/H264
-4. HA's built-in stream component proxies the RTSP stream as HLS / WebRTC to the frontend
+2. Starts a minimal RTSP server bound to `localhost` (port chosen automatically, no config needed)
+3. Opens a VLVL session, switches it to the camera's full-rate stream mode and acknowledges packets so the camera keeps streaming
+4. Decrypts each frame with the session key and forwards it as RTP/H.264
+5. HA's built-in stream component proxies the RTSP stream as HLS / WebRTC to the frontend
+
+See [CAMERA_API.md](CAMERA_API.md) for the full protocol.
 
 The result: **the Live View card "just works"** after adding the integration, as long as HA and the camera are on the same network.
 
@@ -160,9 +166,7 @@ In Homebridge, add a camera source pointed at the RTSP URL that HA logs on start
 | `sensor.kodak_camera_sd_card_capacity` | Sensor | MB |
 | `sensor.kodak_camera_sd_card_free_space` | Sensor | MB free |
 | `sensor.kodak_camera_video_bitrate` | Sensor | kbps |
-| `sensor.kodak_camera_charge_duration` | Sensor | Minutes |
 | `binary_sensor.kodak_camera_charging` | Binary | Charging? |
-| `binary_sensor.kodak_camera_active` | Binary | Camera active? |
 | `binary_sensor.kodak_camera_motion_recording` | Binary | Currently recording? |
 | `switch.kodak_camera_motion_detection` | Switch | Enable/disable motion |
 | `switch.kodak_camera_sound_detection` | Switch | Enable/disable sound |
@@ -173,8 +177,18 @@ In Homebridge, add a camera source pointed at the RTSP URL that HA logs on start
 | `select.kodak_camera_motion_sensitivity` | Select | Low / Medium / High |
 | `select.kodak_camera_camera_orientation` | Select | Normal / Ceiling Mount |
 | `button.kodak_camera_restart_camera` | Button | Restart |
-| `button.kodak_camera_play_melody_1` … `_5` | Button | Play melody |
-| `button.kodak_camera_stop_melody` | Button | Stop melody |
+
+---
+
+## Video quality tips
+
+- **Keep the camera's bitrate at 550 kbps** (Kodak's default). Above it the
+  camera skips more frames over Wi-Fi, which shows as smearing until the next
+  full frame.
+- The camera serves one live session at a time, so viewing it from two places
+  at once interrupts one of them.
+- See [CAMERA_API.md](CAMERA_API.md) for the camera's background Wi-Fi scanning,
+  which can be switched off to halve stream stalls.
 
 ---
 
@@ -184,7 +198,7 @@ In Homebridge, add a camera source pointed at the RTSP URL that HA logs on start
 → Ensure the integration loaded without errors. Check **Settings → System → Logs** for `kodaxha`.
 
 **Camera shows offline / unavailable**
-→ Confirm HA can reach the camera: `ping 192.168.178.36` from your HA host. Also check the camera hasn't changed IP — assign a DHCP reservation in your router for the camera's MAC address.
+→ Confirm HA can reach the camera: `ping 192.168.1.100` from your HA host. Also check the camera hasn't changed IP — assign a DHCP reservation in your router for the camera's MAC address.
 
 **Lovelace card not appearing in card picker**
 → If HA is in YAML mode, manually add the resource to your `configuration.yaml`:
@@ -202,9 +216,12 @@ lovelace:
 
 ## Credits
 
-- Camera HTTP API reverse-engineered from [kairoaraujo/kodak-smart-home](https://github.com/kairoaraujo/kodak-smart-home) and community findings in [issue #16](https://github.com/kairoaraujo/kodak-smart-home/issues/16)
-- VLVL P2P protocol reverse-engineered by Elliott L-W through UDP packet analysis; SPS/PPS parameters verified with VLC (H264 baseline 1280×720)
-- Built on top of the original Kodak Smart Home mobile app architecture (PerimeterSafe SDK)
+- Camera HTTP API first documented by [kairoaraujo/kodak-smart-home](https://github.com/kairoaraujo/kodak-smart-home) and community findings in [issue #16](https://github.com/kairoaraujo/kodak-smart-home/issues/16)
+- VLVL stream protocol notes (encryption, ACKs, stream modes, G.722 audio, command channel, pan/tilt) by Elliott L-W, documented for interoperability from the camera's local network behaviour
+
+## Disclaimer
+
+KodaxHA is an independent project. It is not affiliated with, endorsed by or supported by Kodak or the camera's manufacturer. "Kodak" is a trademark of its owner and is used here only to say which cameras this works with. It talks only to cameras you own, on your own network.
 
 ## Licence
 

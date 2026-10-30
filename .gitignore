@@ -1,0 +1,10 @@
+# Research material, captures, the app package and anything with real device
+# details (IPs, MACs, session keys). Never commit.
+sensitive/
+
+# KodaxWeb standalone app: developed here, moving to its own repository.
+# (Its live cameras.json holds camera IPs/MACs.)
+kodax-web/
+
+__pycache__/
+*.pyc
