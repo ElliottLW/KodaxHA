@@ -225,4 +225,4 @@ KodaxHA is an independent project. It is not affiliated with, endorsed by or sup
 
 ## Licence
 
-See [LICENSE](../LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE.md): free to use, modify and share for any non-commercial purpose; selling it or using it commercially isn't permitted. It comes as is, with no warranty. The licence covers only this project's own code and docs; see [NOTICE](NOTICE).
