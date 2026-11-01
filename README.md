@@ -159,7 +159,7 @@ In Homebridge, add a camera source pointed at the RTSP URL that HA logs on start
 | Entity | Type | Description |
 |--------|------|-------------|
 | `camera.kodak_camera_live_view` | Camera | Live H264 stream via VLVL→RTSP bridge + JPEG snapshots via ffmpeg |
-| `sensor.kodak_camera_battery_level` | Sensor | Battery % |
+| `sensor.kodak_camera_battery_level` | Sensor | Battery %, in steps of 25 |
 | `sensor.kodak_camera_wifi_signal` | Sensor | WiFi signal % |
 | `sensor.kodak_camera_temperature` | Sensor | °C (if sensor present) |
 | `sensor.kodak_camera_humidity` | Sensor | % (if sensor present) |

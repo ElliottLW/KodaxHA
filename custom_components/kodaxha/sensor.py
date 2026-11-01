@@ -30,6 +30,18 @@ class KodaxHASensorDescription(SensorEntityDescription):
     available_fn: Callable[[dict[str, Any]], bool] | None = None
 
 
+def _battery_percent(raw: str) -> int | None:
+    """Charge level from the camera's `bat` code, in steps of 25 %.
+
+    `bat` isn't a percentage: the units digit is a 0-4 level and a tens digit
+    of 1 means plugged in (14 = full and charging, 4 = full on battery).
+    """
+    code = int(raw)
+    if code < 0:
+        return None
+    return (0, 25, 50, 75, 100)[min(code % 10, 4)]
+
+
 def _md_available(data: dict) -> bool:
     """Motion detection availability — only False if the camera sends nothing."""
     return data.get("md") is not None
@@ -44,6 +56,7 @@ SENSOR_DESCRIPTIONS: tuple[KodaxHASensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         suggested_display_precision=0,
+        value_fn=_battery_percent,
     ),
     # ── Network ────────────────────────────────────────────────────────────
     # Camera reports WiFi as 0-100 % (not dBm), so no device_class to avoid
