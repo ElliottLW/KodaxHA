@@ -92,7 +92,7 @@ model code), `get_mac_address`, `get_wifi_strength`, `get_video_bitrate`,
 | `melody_vol` | `value=0..5` | |
 | `melody1` … `melody5`, `melodystop` | `duration=2` | Lullaby playback |
 | `set_city_timezone` | `value=<IANA name>` | e.g. `Europe/London` |
-| `change_router_info` | `ssid=<b64>&password=<b64>` | Moves a working camera to another network. Both values base64 then URL-encoded |
+| `change_router_info` | `ssid=<b64>&password=<b64>` | Saves a backup ("alternative") network, which the camera only tries when its main one is unavailable; it does not move a working camera. Both values base64 then URL-encoded |
 | `restart_system` | | Soft restart (keeps settings) |
 
 Not supported on this model/firmware (`-1`): `set_framerate`, `set_gop`,
