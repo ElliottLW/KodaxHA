@@ -37,7 +37,7 @@ The main polling call. `&`-separated `key=value` pairs:
 
 | Key | Meaning |
 |-----|---------|
-| `bat`, `charge`, `charge_dur` | Battery %, charging (0/1), minutes on charge |
+| `bat`, `charge`, `charge_dur` | Battery code (below), charging (0/1), a seconds counter that restarts often (not a charge time) |
 | `wifi`, `ssid1`, `ssid3`, `localip`, `dnsm`, `dnss` | Wi-Fi signal %, network name(s), IP, DNS servers |
 | `res`, `brate`, `flicker`, `isp_idx`, `agc_lvl` | Resolution (480/720), bitrate kbps, anti-flicker Hz, image profile, gain level |
 | `flipup`, `fliplr` | Ceiling-mount flip, mirror |
@@ -51,6 +51,20 @@ The main polling call. `&`-separated `key=value` pairs:
 | `lulvol`, `lulla`, `lulla_dur` | Lullaby volume / state |
 | `ca`, `mvr` | A stream session is open; motion recording in progress |
 | `hw_id`, `soc_ver`, `rp_conn` | Hardware id, SoC version, range-extender state |
+
+**Battery code.** `bat` is not a percentage. It's a two-digit code:
+
+| Part | Meaning |
+|------|---------|
+| units digit (`bat % 10`) | charge level 0–4, i.e. 0 / 25 / 50 / 75 / 100 % (4 or more is full) |
+| tens digit (`bat // 10`) | `1` when plugged in |
+
+So `14` is "full, plugged in" and `4` is "full, on battery"; `13` would be 75 %
+and charging. A negative value means the level isn't known. On the test
+cameras the value never changed beyond those two readings, because both
+batteries were full. (Doorbell-style models may report a battery voltage in a
+separate `bat1` field instead; untested here.) `charge_dur` is a seconds
+counter that restarts often and isn't a charge time, so it isn't shown.
 
 Other read-only calls: `get_version`, `get_all_versions`
 (`recovery=…,mainos=…,media=…`), `get_udid` (24 chars; characters 4–6 are the
@@ -78,7 +92,7 @@ model code), `get_mac_address`, `get_wifi_strength`, `get_video_bitrate`,
 | `melody_vol` | `value=0..5` | |
 | `melody1` … `melody5`, `melodystop` | `duration=2` | Lullaby playback |
 | `set_city_timezone` | `value=<IANA name>` | e.g. `Europe/London` |
-| `change_router_info` | `ssid=<b64>&password=<b64>` | Moves a working camera to another network. Both values base64 then URL-encoded |
+| `change_router_info` | `ssid=<b64>&password=<b64>` | Saves a backup ("alternative") network, which the camera only tries when its main one is unavailable; it does not move a working camera. Both values base64 then URL-encoded |
 | `restart_system` | | Soft restart (keeps settings) |
 
 Not supported on this model/firmware (`-1`): `set_framerate`, `set_gop`,
